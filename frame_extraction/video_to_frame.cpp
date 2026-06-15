@@ -18,7 +18,10 @@ void signal_handler(int signum)
 
 std::string load_camera_config(const std::string& path)
 {
+    std::cout << "Loading camera config from: " << path << "\n";
     std::ifstream file(path);
+    std::cout << "file creation: " << "\n";
+
     if (!file.is_open())
         throw std::runtime_error("Could not open JSON file: " + path);
     return std::string(
@@ -80,6 +83,96 @@ void save_points(const rs2::points& points, const rs2::video_frame& color, int i
     std::cout << "Saved " << filename.str() << " (" << valid << " points)\n";
 }
 
+void save_points_roi(
+    const rs2::points&      points,
+    const rs2::video_frame& color,
+    int                     index,
+    const ROI&              roi)
+{
+    std::ostringstream filename;
+    filename << "../results/test_murielle/pointcloud_"
+             << std::setw(5) << std::setfill('0') << index << ".ply";
+
+    auto vertices   = points.get_vertices();
+    auto tex_coords = points.get_texture_coordinates();
+
+    int w          = color.get_width();
+    int h          = color.get_height();
+    auto color_data = reinterpret_cast<const uint8_t*>(color.get_data());
+
+    // ── Reshape flat vertices into 2D grid (H x W) ──
+    // Same concept as issue #2769:
+    // verts = np.reshape(h, w, 3)
+    // roi   = verts[ymin:ymax, xmin:xmax]
+    struct Vertex3D { float x, y, z; };
+    std::vector<std::vector<Vertex3D>> verts_2d(h, std::vector<Vertex3D>(w));
+    std::vector<std::vector<std::pair<float,float>>> tex_2d(
+        h, std::vector<std::pair<float,float>>(w));
+
+    for (int row = 0; row < h; row++)
+        for (int col = 0; col < w; col++)
+        {
+            int i = row * w + col;
+            verts_2d[row][col] = { vertices[i].x,
+                                   vertices[i].y,
+                                   vertices[i].z };
+            tex_2d[row][col]   = { tex_coords[i].u,
+                                   tex_coords[i].v };
+        }
+
+    // ── Clamp ROI to frame bounds ──
+    int x0 = std::max(roi.xmin, 0);
+    int x1 = std::min(roi.xmax, w - 1);
+    int y0 = std::max(roi.ymin, 0);
+    int y1 = std::min(roi.ymax, h - 1);
+
+    // ── Count valid points inside ROI ──
+    size_t valid = 0;
+    for (int row = y0; row < y1; row++)
+        for (int col = x0; col < x1; col++)
+            if (verts_2d[row][col].z > 0)
+                valid++;
+
+    if (valid == 0)
+    {
+        std::cout << "Frame " << index << ": empty ROI, skipping\n";
+        return;
+    }
+
+    // ── Write PLY ──
+    std::ofstream ofs(filename.str());
+    ofs << "ply\nformat ascii 1.0\n"
+        << "element vertex " << valid << "\n"
+        << "property float x\nproperty float y\nproperty float z\n"
+        << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        << "end_header\n";
+
+    for (int row = y0; row < y1; row++)
+    {
+        for (int col = x0; col < x1; col++)
+        {
+            const auto& v = verts_2d[row][col];
+            if (v.z <= 0) continue;
+
+            // Map texture coordinate to color pixel
+            const auto& tc = tex_2d[row][col];
+            int cx = std::min(std::max(int(tc.first  * w), 0), w - 1);
+            int cy = std::min(std::max(int(tc.second * h), 0), h - 1);
+            int px = (cy * w + cx) * 3;
+
+            ofs << v.x << " " << v.y << " " << v.z << " "
+                << int(color_data[px + 2]) << " "   // R
+                << int(color_data[px + 1]) << " "   // G
+                << int(color_data[px + 0]) << "\n"; // B
+        }
+    }
+
+    std::cout << "Saved " << filename.str()
+              << " (" << valid << " pts in ROI ["
+              << x0 << "," << y0 << "]-["
+              << x1 << "," << y1 << "])\n";
+}
+
 
 int main() try
 {
@@ -90,12 +183,22 @@ int main() try
     int sequence_time = 10; // seconds
     int fps = 6;
 
+    // Define ROI around torso center
+    int torso_width = 1280*0.45;
+    int torso_height = 720*0.65;
+    ROI roi;
+    roi.xmin = (1280-torso_width)/2;
+    roi.xmax = roi.xmin + torso_width;
+    roi.ymin = (720-torso_height)/2;
+    roi.ymax = roi.ymin + torso_height;
+
+
     rs2::context ctx;
     rs2::device_list devices = ctx.query_devices();
     if (devices.size() == 0)
         throw std::runtime_error("No RealSense device detected.");
 
-        rs2::device dev = devices[0];
+    rs2::device dev = devices[0];
 
     // Enable advanced mode for json
     if (!dev.is<rs400::advanced_mode>())
@@ -115,7 +218,7 @@ int main() try
     }
 
     std::cout << "Loading camera settings from JSON...\n";
-    std::string json_content = load_camera_config("../../camera_settings/threshold_settings.json");
+    std::string json_content = load_camera_config("../../camera_settings/manual_exp_settings.json");
     advanced_mode.load_json(json_content);
     std::cout << "Settings loaded.\n";
 
@@ -133,8 +236,8 @@ int main() try
     // dec_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
 
     // Threshold: depth clip in metres
-    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.0f);
-    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 0.8f);
+    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
+    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
 
     // Spatial: edge-preserving smoothing
     spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,   2);  
@@ -152,8 +255,8 @@ int main() try
     rs2::pipeline pipe;
     rs2::config cfg;
 
-    cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16,  6);
-    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 6);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  6);
+    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 6);
 
     cfg.enable_record_to_file(video_file);
 
@@ -199,7 +302,8 @@ int main() try
             cloud_index++;
             pc.map_to(color);
             points = pc.calculate(filtered);
-            save_points(points, color, cloud_index);
+
+            save_points_roi(points, color, cloud_index, roi);
             last_saved = now;
         }
     }
