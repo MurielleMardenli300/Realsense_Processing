@@ -7,6 +7,10 @@
 #include <chrono>
 #include <csignal> 
 #include <thread>
+#include <format>
+#include <filesystem>
+#include <boost/program_options.hpp>
+
 
 static bool running = true;
 
@@ -18,10 +22,7 @@ void signal_handler(int signum)
 
 std::string load_camera_config(const std::string& path)
 {
-    std::cout << "Loading camera config from: " << path << "\n";
     std::ifstream file(path);
-    std::cout << "file creation: " << "\n";
-
     if (!file.is_open())
         throw std::runtime_error("Could not open JSON file: " + path);
     return std::string(
@@ -38,10 +39,10 @@ struct ROI {
 };
 
 
-void save_points(const rs2::points& points, const rs2::video_frame& color, int index)
+void save_points(const rs2::points& points, const rs2::video_frame& color, int index, const std::string& experiment_name = "test_murielle")
 {
     std::ostringstream filename;
-    filename << "../results/test_murielle/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
+    filename << "../results/" << experiment_name << "/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
 
     std::cout << "Saving " << filename.str() << " with " << points.size() << " points...\n";
 
@@ -87,10 +88,12 @@ void save_points_roi(
     const rs2::points&      points,
     const rs2::video_frame& color,
     int                     index,
-    const ROI&              roi)
+    const ROI&              roi,
+    const std::string&     experiment_name = "test_murielle")
 {
     std::ostringstream filename;
-    filename << "../results/test_murielle/pointcloud_"
+
+    filename << "../results/" << experiment_name << "/pointcloud_"
              << std::setw(5) << std::setfill('0') << index << ".ply";
 
     auto vertices   = points.get_vertices();
@@ -174,23 +177,52 @@ void save_points_roi(
 }
 
 
-int main() try
+int main(int argc, char *argv[]) try
 {
     std::signal(SIGINT, signal_handler);
+    namespace po = boost::program_options;
 
+    // Argument parser for file name input
+    po::variables_map vm;
+    po::options_description desc("Allowed options");
+
+    std::string experiment_name;
+
+    desc.add_options()
+        ("help,h", "show help message")
+        ("experiment_name,f", po::value<std::string>(&experiment_name)->required(),
+         "input folder name");
+        po::store(po::parse_command_line(argc, argv, desc), vm);
+
+    if (vm.count("help"))
+    {
+        std::cout << desc << '\n';
+        return 0;
+    }
+    po::notify(vm);
+    std::cout << "Experiment name: " << experiment_name << '\n';
+
+    if (!(std::filesystem::exists("../results/" + experiment_name)))
+    {
+        std::filesystem::create_directories("../results/" + experiment_name);
+        std::cout << "Created directory: " << "../results/" + experiment_name << '\n';
+    }
+    
 
     std::string video_file = "capture_breath.db3";
     int sequence_time = 10; // seconds
     int fps = 6;
 
     // Define ROI around torso center
-    int torso_width = 1280*0.45;
-    int torso_height = 720*0.65;
+    int torso_width = 520;
+
+    // For torso from ymin=-0.175m to 0.275m
+    // int torso_height = 720*0.65;
     ROI roi;
-    roi.xmin = (1280-torso_width)/2;
+    roi.xmin = 400;
     roi.xmax = roi.xmin + torso_width;
-    roi.ymin = (720-torso_height)/2;
-    roi.ymax = roi.ymin + torso_height;
+    roi.ymin = 25;
+    roi.ymax = 525;
 
 
     rs2::context ctx;
@@ -218,7 +250,7 @@ int main() try
     }
 
     std::cout << "Loading camera settings from JSON...\n";
-    std::string json_content = load_camera_config("../../camera_settings/manual_exp_settings.json");
+    std::string json_content = load_camera_config("../../camera_settings/threshold_settings.json");
     advanced_mode.load_json(json_content);
     std::cout << "Settings loaded.\n";
 
@@ -303,7 +335,7 @@ int main() try
             pc.map_to(color);
             points = pc.calculate(filtered);
 
-            save_points_roi(points, color, cloud_index, roi);
+            save_points_roi(points, color, cloud_index, roi, experiment_name);
             last_saved = now;
         }
     }
