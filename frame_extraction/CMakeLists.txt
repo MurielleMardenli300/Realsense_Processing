@@ -1,13 +1,24 @@
 cmake_minimum_required(VERSION 3.1)
-project(my_recorder)
+project(my_realsense)
 
 find_package(realsense2 REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 
+option(RECORD OFF)
+option(EXTRACT OFF)
 
-add_executable(my_recorder video_to_frame.cpp)
-
-target_link_libraries(my_recorder
+if(RECORD)
+    add_executable(my_recorder record_video.cpp)
+    target_link_libraries(my_recorder
     realsense2
     Boost::program_options
 )
+endif()
+
+if(EXTRACT)
+    add_executable(my_extracter video_to_frame.cpp)
+    target_link_libraries(my_extracter
+    realsense2
+    Boost::program_options
+)
+endif()

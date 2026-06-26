@@ -1,2 +1,12 @@
 */build/*
 */results/*
+
+*/CMakeFiles/*
+*.cmake
+CMakeCache.txt
+
+my_extracter
+
+#data
+*.ply
+*.db3

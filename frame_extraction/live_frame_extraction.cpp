@@ -39,6 +39,51 @@ struct ROI {
 };
 
 
+void save_points(const rs2::points& points, const rs2::video_frame& color, int index, const std::string& experiment_name = "test_murielle")
+{
+    std::ostringstream filename;
+    filename << "../results/" << experiment_name << "/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
+
+    std::cout << "Saving " << filename.str() << " with " << points.size() << " points...\n";
+
+    auto vertices  = points.get_vertices();
+    auto tex_coords = points.get_texture_coordinates();
+
+    int w = color.get_width();
+    int h = color.get_height();
+    auto color_data = reinterpret_cast<const uint8_t*>(color.get_data());
+
+    size_t valid = 0;
+    for (size_t i = 0; i < points.size(); i++)
+        if (vertices[i].z > 0) valid++;
+
+    std::ofstream ofs(filename.str());
+    ofs << "ply\nformat ascii 1.0\n"
+        << "element vertex " << valid << "\n"
+        << "property float x\nproperty float y\nproperty float z\n"
+        << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        << "end_header\n";
+
+    for (size_t i = 0; i < points.size(); i++)
+    {
+        if (vertices[i].z <= 0) continue;
+
+        // Map texture coordinate to color pixel
+        int cx = std::min(std::max(int(tex_coords[i].u * w), 0), w - 1);
+        int cy = std::min(std::max(int(tex_coords[i].v * h), 0), h - 1);
+        int pixel = (cy * w + cx) * 3;
+
+        ofs << vertices[i].x << " "
+            << vertices[i].y << " "
+            << vertices[i].z << " "
+            << int(color_data[pixel + 2]) << " "  // R
+            << int(color_data[pixel + 1]) << " "  // G
+            << int(color_data[pixel + 0]) << "\n"; // B
+    }
+
+    std::cout << "Saved " << filename.str() << " (" << valid << " points)\n";
+}
+
 void save_points_roi(
     const rs2::points&      points,
     const rs2::video_frame& color,
@@ -157,17 +202,16 @@ int main(int argc, char *argv[]) try
     po::notify(vm);
     std::cout << "Experiment name: " << experiment_name << '\n';
 
-    std::string video_path = "data/" + experiment_name + ".db3";
-
-    if (!(std::filesystem::exists(video_path)))
+    if (!(std::filesystem::exists("../results/" + experiment_name)))
     {
-        throw std::runtime_error("Input file not found: " + experiment_name);
+        std::filesystem::create_directories("../results/" + experiment_name);
+        std::cout << "Created directory: " << "../results/" + experiment_name << '\n';
     }
-    std::filesystem::create_directories("../results/" + experiment_name);
     
 
+    std::string video_file = "capture_breath.db3";
     int sequence_time = 10; // seconds
-    // int fps = 15;
+    int fps = 15;
 
     // Define ROI around torso center
     int torso_width = 520;
@@ -206,7 +250,7 @@ int main(int argc, char *argv[]) try
     }
 
     std::cout << "Loading camera settings from JSON...\n";
-    std::string json_content = load_camera_config("../camera_settings/threshold_settings.json");
+    std::string json_content = load_camera_config("../../camera_settings/threshold_settings.json");
     advanced_mode.load_json(json_content);
     std::cout << "Settings loaded.\n";
 
@@ -242,17 +286,13 @@ int main(int argc, char *argv[]) try
 
     rs2::pipeline pipe;
     rs2::config cfg;
-    cfg.enable_device_from_file(video_path, false);
 
     cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  15);
     cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 15);
 
+    cfg.enable_record_to_file(video_file);
 
-    auto profile = pipe.start(cfg);  
-
-    // Disable real-time playback so no frames are dropped
-    auto playback = profile.get_device().as<rs2::playback>();
-    playback.set_real_time(false);
+    pipe.start(cfg);  
 
     rs2::pointcloud pc;
     rs2::points     points;
@@ -260,22 +300,15 @@ int main(int argc, char *argv[]) try
 
     using clock = std::chrono::steady_clock;
     auto last_saved = clock::now();
-
-    std::cout << "Recording to " << experiment_name << " and extracting point clouds at 15fps...\n";
-
     int cloud_index = 0;
-    while (running)
+    int total_frames = sequence_time * fps;
+
+    std::cout << "Recording to " << video_file << " and extracting point clouds at 15fps...\n";
+
+        while (running)
     {
         rs2::frameset frames;
-        // poll_for_frames avoids blocking — returns false at end of file
-        if (!pipe.poll_for_frames(&frames)) {
-            // Small sleep to avoid busy-waiting at end of file
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-
-        // End of file recording
-        if (!frames) break;
+        if (!pipe.poll_for_frames(&frames)) continue;
 
         auto aligned = align_to_color.process(frames);
         auto color   = aligned.get_color_frame();
@@ -293,11 +326,16 @@ int main(int argc, char *argv[]) try
         filtered = disparity_to_depth.process(filtered);  // convert back
         filtered = hole_filter.process(filtered);
 
-        cloud_index++;
-        pc.map_to(color);
-        points = pc.calculate(filtered);
+        auto now = clock::now();
+        if (cloud_index < total_frames)
+        {
+            cloud_index++;
+            pc.map_to(color);
+            points = pc.calculate(filtered);
 
-        save_points_roi(points, color, cloud_index, roi, experiment_name);
+            save_points_roi(points, color, cloud_index, roi, experiment_name);
+            last_saved = now;
+        }
     }
 
     pipe.stop();
