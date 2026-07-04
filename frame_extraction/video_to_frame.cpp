@@ -1,24 +1,21 @@
 #include <librealsense2/rs.hpp>
-#include <librealsense2/rs_advanced_mode.hpp> 
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
-#include <csignal> 
+#include <csignal>
 #include <thread>
-#include <format>
 #include <filesystem>
 #include <boost/program_options.hpp>
 
-
 static bool running = true;
 
-void signal_handler(int signum)
-{
-    std::cout << "\nInterrupt received, stopping.\n";
-    running = false;
-}
+// void signal_handler(int signum)
+// {
+//     std::cout << "\nInterrupt received, stopping.\n";
+//     running = false;
+// }
 
 std::string load_camera_config(const std::string& path)
 {
@@ -32,23 +29,24 @@ std::string load_camera_config(const std::string& path)
 }
 
 struct ROI {
-    int xmin = 150;
+    int xmin = 200;
     int xmax = 490;
-    int ymin = 100;
-    int ymax = 380;
-};
+    int ymin = 200;
+    int ymax = 500;
 
+    float y_world_min = -1000.0f;
+    float y_world_max =  1000.0f;
+};
 
 void save_points_roi(
     const rs2::points&      points,
     const rs2::video_frame& color,
     int                     index,
     const ROI&              roi,
-    const std::string&     experiment_name = "test_murielle")
+    const std::string&      results_path)
 {
     std::ostringstream filename;
-
-    filename << "../results/" << experiment_name << "/pointcloud_"
+    filename << results_path << "/pointcloud_"
              << std::setw(5) << std::setfill('0') << index << ".ply";
 
     auto vertices   = points.get_vertices();
@@ -58,10 +56,6 @@ void save_points_roi(
     int h          = color.get_height();
     auto color_data = reinterpret_cast<const uint8_t*>(color.get_data());
 
-    // ── Reshape flat vertices into 2D grid (H x W) ──
-    // Same concept as issue #2769:
-    // verts = np.reshape(h, w, 3)
-    // roi   = verts[ymin:ymax, xmin:xmax]
     struct Vertex3D { float x, y, z; };
     std::vector<std::vector<Vertex3D>> verts_2d(h, std::vector<Vertex3D>(w));
     std::vector<std::vector<std::pair<float,float>>> tex_2d(
@@ -71,25 +65,19 @@ void save_points_roi(
         for (int col = 0; col < w; col++)
         {
             int i = row * w + col;
-            verts_2d[row][col] = { vertices[i].x,
-                                   vertices[i].y,
-                                   vertices[i].z };
-            tex_2d[row][col]   = { tex_coords[i].u,
-                                   tex_coords[i].v };
+            verts_2d[row][col] = { vertices[i].x, vertices[i].y, vertices[i].z };
+            tex_2d[row][col]   = { tex_coords[i].u, tex_coords[i].v };
         }
 
-    // ── Clamp ROI to frame bounds ──
-    int x0 = std::max(roi.xmin, 0);
-    int x1 = std::min(roi.xmax, w - 1);
-    int y0 = std::max(roi.ymin, 0);
-    int y1 = std::min(roi.ymax, h - 1);
+    int x0 = roi.xmin,   x1 = roi.xmax;
+    int y0 = roi.ymin,   y1 = roi.ymax;
 
-    // ── Count valid points inside ROI ──
     size_t valid = 0;
     for (int row = y0; row < y1; row++)
         for (int col = x0; col < x1; col++)
             if (verts_2d[row][col].z > 0)
                 valid++;
+        
 
     if (valid == 0)
     {
@@ -97,7 +85,6 @@ void save_points_roi(
         return;
     }
 
-    // ── Write PLY ──
     std::ofstream ofs(filename.str());
     ofs << "ply\nformat ascii 1.0\n"
         << "element vertex " << valid << "\n"
@@ -106,202 +93,227 @@ void save_points_roi(
         << "end_header\n";
 
     for (int row = y0; row < y1; row++)
-    {
         for (int col = x0; col < x1; col++)
         {
             const auto& v = verts_2d[row][col];
             if (v.z <= 0) continue;
 
-            // Map texture coordinate to color pixel
             const auto& tc = tex_2d[row][col];
             int cx = std::min(std::max(int(tc.first  * w), 0), w - 1);
             int cy = std::min(std::max(int(tc.second * h), 0), h - 1);
             int px = (cy * w + cx) * 3;
 
             ofs << v.x << " " << v.y << " " << v.z << " "
-                << int(color_data[px + 2]) << " "   // R
-                << int(color_data[px + 1]) << " "   // G
-                << int(color_data[px + 0]) << "\n"; // B
+                << int(color_data[px + 2]) << " "
+                << int(color_data[px + 1]) << " "
+                << int(color_data[px + 0]) << "\n";
         }
-    }
 
-    std::cout << "Saved " << filename.str()
-              << " (" << valid << " pts in ROI ["
-              << x0 << "," << y0 << "]-["
-              << x1 << "," << y1 << "])\n";
+    std::cout << "Saved " << filename.str() << " (" << valid << " pts)\n";
 }
 
 
-int main(int argc, char *argv[]) try
+// ── Per-file extraction ───────────────────────────────────────────────────────
+// Returns the number of point clouds saved, or -1 on error.
+int process_file(
+    const std::filesystem::path& video_path,
+    const std::string&           results_path,
+    const ROI&                   roi)
 {
-    std::signal(SIGINT, signal_handler);
-    namespace po = boost::program_options;
-
-    // Argument parser for file name input
-    po::variables_map vm;
-    po::options_description desc("Allowed options");
-
-    std::string experiment_name;
-
-    desc.add_options()
-        ("help,h", "show help message")
-        ("experiment_name,f", po::value<std::string>(&experiment_name)->required(),
-         "input folder name");
-        po::store(po::parse_command_line(argc, argv, desc), vm);
-
-    if (vm.count("help"))
-    {
-        std::cout << desc << '\n';
-        return 0;
-    }
-    po::notify(vm);
-    std::cout << "Experiment name: " << experiment_name << '\n';
-
-    std::string video_path = "data/" + experiment_name + ".db3";
-
-    if (!(std::filesystem::exists(video_path)))
-    {
-        throw std::runtime_error("Input file not found: " + experiment_name);
-    }
-    std::filesystem::create_directories("../results/" + experiment_name);
-    
-
-    int sequence_time = 10; // seconds
-    // int fps = 15;
-
-    // Define ROI around torso center
-    int torso_width = 520;
-
-    // For torso from ymin=-0.175m to 0.275m
-    // int torso_height = 720*0.65;
-    ROI roi;
-    roi.xmin = 400;
-    roi.xmax = roi.xmin + torso_width;
-    roi.ymin = 25;
-    roi.ymax = 525;
-
+    std::cout << "\n──────────────────────────────────────────\n";
+    std::cout << "Processing: " << video_path.filename() << "\n";
+    std::cout << "Output dir: " << results_path << "\n";
+    std::filesystem::create_directories(results_path);
 
     rs2::context ctx;
-    rs2::device_list devices = ctx.query_devices();
-    if (devices.size() == 0)
-        throw std::runtime_error("No RealSense device detected.");
 
-    rs2::device dev = devices[0];
-
-    // Enable advanced mode for json
-    if (!dev.is<rs400::advanced_mode>())
-        throw std::runtime_error("Device does not support advanced mode.");
-
-    auto advanced_mode = dev.as<rs400::advanced_mode>();
-
-    if (!advanced_mode.is_enabled())
-    {
-        std::cout << "Enabling advanced mode...\n";
-        advanced_mode.toggle_advanced_mode(true);
-
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        devices = ctx.query_devices();
-        dev = devices[0];
-        advanced_mode = dev.as<rs400::advanced_mode>();
-    }
-
-    std::cout << "Loading camera settings from JSON...\n";
-    std::string json_content = load_camera_config("../camera_settings/threshold_settings.json");
-    advanced_mode.load_json(json_content);
-    std::cout << "Settings loaded.\n";
-
-    // Declare all filters
-    // rs2::decimation_filter  dec_filter;
-    rs2::threshold_filter   thr_filter;
-    rs2::disparity_transform depth_to_disparity(true);   // depth -> disparity
-    rs2::spatial_filter     spat_filter;
-    rs2::temporal_filter    temp_filter;
-    rs2::disparity_transform disparity_to_depth(false);  // disparity -> depth
+    // ── Camera filters ────────────────────────────────────────────────────────
+    rs2::threshold_filter    thr_filter;
+    rs2::disparity_transform depth_to_disparity(true);
+    rs2::spatial_filter      spat_filter;
+    rs2::temporal_filter     temp_filter;
+    rs2::disparity_transform disparity_to_depth(false);
     rs2::hole_filling_filter hole_filter;
 
-    // Tune filter options
-
-    // dec_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
-
-    // Threshold: depth clip in metres
     thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
     thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
-
-    // Spatial: edge-preserving smoothing
-    spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,   2);  
+    spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,    2);
     spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.5f);
-    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20); 
-    spat_filter.set_option(RS2_OPTION_HOLES_FILL,          0); 
-
-    // Temporal: reduces temporal noise across frames
-    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.4f); 
-    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20); 
-    // Persistency mode (0=disabled, 1–8 increasing aggressiveness)
+    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20);
+    spat_filter.set_option(RS2_OPTION_HOLES_FILL,          0);
+    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.4f);
+    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20);
     temp_filter.set_option(RS2_OPTION_HOLES_FILL,          0);
 
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+    rs2::pipeline pipe(ctx);
+    rs2::config   cfg;
+    cfg.enable_device_from_file(video_path.string(), false);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  6);
+    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 6);
 
-    rs2::pipeline pipe;
-    rs2::config cfg;
-    cfg.enable_device_from_file(video_path, false);
-
-    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  15);
-    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 15);
-
-
-    auto profile = pipe.start(cfg);  
-
-    // Disable real-time playback so no frames are dropped
+    auto profile  = pipe.start(cfg);
     auto playback = profile.get_device().as<rs2::playback>();
     playback.set_real_time(false);
+
+    // ── End-of-file detection via status callback ─────────────────────────────
+    // poll_for_frames() never returns a falsy frameset at EOF — it just
+    // keeps returning false (no frame ready). The only reliable signal is
+    // the playback status changing to STOPPED.
+    bool file_done{false};
+    playback.set_status_changed_callback([&file_done](rs2_playback_status status)
+    {
+        if (status == RS2_PLAYBACK_STATUS_STOPPED)
+        {
+            file_done = true;
+            std::cout << "  Playback finished (EOF).\n";
+        }
+    });
 
     rs2::pointcloud pc;
     rs2::points     points;
     rs2::align      align_to_color(RS2_STREAM_COLOR);
 
-    using clock = std::chrono::steady_clock;
-    auto last_saved = clock::now();
+    // ── Auto-exposure warm-up ─────────────────────────────────────────────────
+    const int max_warmup  = 60;
+    const int stable_need = 5;
+    int   stable_count    = 0;
+    float last_exposure   = -1.0f;
 
-    std::cout << "Recording to " << experiment_name << " and extracting point clouds at 15fps...\n";
-
-    int cloud_index = 0;
-    while (running)
+    for (int wi = 0; wi < max_warmup && running && !file_done; wi++)
     {
         rs2::frameset frames;
-        // poll_for_frames avoids blocking — returns false at end of file
         if (!pipe.poll_for_frames(&frames)) {
-            // Small sleep to avoid busy-waiting at end of file
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        auto color = frames.get_color_frame();
+        if (!color) continue;
+
+        if (color.supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE))
+        {
+            float exp = static_cast<float>(
+                color.get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE));
+            if (last_exposure > 0 && std::abs(exp - last_exposure) / last_exposure < 0.02f)
+                stable_count++;
+            else
+                stable_count = 0;
+            last_exposure = exp;
+            if (stable_count >= stable_need) {
+                std::cout << "  Auto-exposure stable after " << wi << " warm-up frames.\n";
+                break;
+            }
+        }
+        else
+        {
+            if (wi >= 10) break;  // metadata unavailable — fixed skip
+        }
+    }
+
+    // ── Main extraction loop ──────────────────────────────────────────────────
+    int cloud_index = 0;
+    while (running && !file_done)
+    {
+        rs2::frameset frames;
+        if (!pipe.poll_for_frames(&frames)) {
+            // No frame ready yet — but also check if playback is already stopped
+            // (the callback may have fired between the poll and this check)
+            if (playback.current_status() == RS2_PLAYBACK_STATUS_STOPPED)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        // End of file recording
-        if (!frames) break;
-
         auto aligned = align_to_color.process(frames);
         auto color   = aligned.get_color_frame();
         auto depth   = aligned.get_depth_frame();
-
         if (!color || !depth) continue;
 
-        // Apply post processingfilter chain
         rs2::frame filtered = depth;
-        // filtered = dec_filter.process(filtered);
         filtered = thr_filter.process(filtered);
-        filtered = depth_to_disparity.process(filtered); // convert back
+        filtered = depth_to_disparity.process(filtered);
         filtered = spat_filter.process(filtered);
         filtered = temp_filter.process(filtered);
-        filtered = disparity_to_depth.process(filtered);  // convert back
+        filtered = disparity_to_depth.process(filtered);
         filtered = hole_filter.process(filtered);
 
         cloud_index++;
         pc.map_to(color);
         points = pc.calculate(filtered);
-
-        save_points_roi(points, color, cloud_index, roi, experiment_name);
+        save_points_roi(points, color, cloud_index, roi, results_path);
     }
 
     pipe.stop();
-    std::cout << "Done. Saved " << cloud_index << " point clouds.\n";
+    std::cout << "  Done: " << cloud_index << " point clouds saved.\n";
+    return cloud_index;
+}
+
+
+int main(int argc, char* argv[]) try
+{
+    // std::signal(SIGINT, signal_handler);
+    namespace po = boost::program_options;
+
+    po::variables_map vm;
+    po::options_description desc("Allowed options");
+
+    std::string dir;
+    desc.add_options()
+        ("help,h", "show help message")
+        ("dir,d", po::value<std::string>(&dir)->required(),
+         "sub-directory inside data/ containing the .db3 files to process");
+
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+    if (vm.count("help")) { std::cout << desc << '\n'; return 0; }
+    po::notify(vm);
+
+    // ── Locate all .db3 files under data/<dir>/ ───────────────────────────────
+    std::filesystem::path data_dir = std::filesystem::path("data") / dir;
+    if (!std::filesystem::exists(data_dir))
+        throw std::runtime_error("Directory not found: " + data_dir.string());
+
+    std::vector<std::filesystem::path> db3_files;
+    for (const auto& entry : std::filesystem::directory_iterator(data_dir))
+        if (entry.is_regular_file() && entry.path().extension() == ".db3")
+            db3_files.push_back(entry.path());
+
+    if (db3_files.empty())
+        throw std::runtime_error("No .db3 files found in " + data_dir.string());
+
+    std::sort(db3_files.begin(), db3_files.end());  // alphabetical / deterministic order
+    std::cout << "Found " << db3_files.size() << " .db3 file(s) in " << data_dir << "\n";
+
+
+    // ── ROI — shared across all files in this run ─────────────────────────────
+    ROI roi;
+    roi.xmin = 525;
+    roi.xmax = roi.xmin + 350;
+    roi.ymin = 50;
+    roi.ymax = 400;
+    roi.y_world_min = -0.175f;
+    roi.y_world_max =  0.275f;
+
+    // ── Process each file ─────────────────────────────────────────────────────
+    int total_clouds = 0;
+    int files_done   = 0;
+
+    for (const auto& video_path : db3_files)
+    {
+        if (!running) break;
+
+        // Output goes to results/<dir>/<experiment_name>/
+        std::string experiment_name = video_path.stem().string();
+        std::string results_path =
+            (std::filesystem::path("results") / dir / experiment_name).string();
+
+        int n = process_file(video_path, results_path, roi);
+        if (n >= 0) { total_clouds += n; files_done++; }
+    }
+
+    std::cout << "\n══════════════════════════════════════════\n";
+    std::cout << "Processed " << files_done << " / " << db3_files.size() << " file(s), "
+              << total_clouds << " point clouds saved in total.\n";
+
     return EXIT_SUCCESS;
 }
 catch (const rs2::error& e)

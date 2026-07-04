@@ -10,15 +10,22 @@ int main(int argc, char *argv[]) try {
     po::variables_map vm;
     po::options_description desc("Allowed options");
 
-    std::string experiment_name;
+    std::string name;
+    std::string dir = "";
     int fps = 0;
+    int length = 20;
 
     desc.add_options()
     ("help,h", "show help message")
     ("fps,f", po::value<int>(&fps)->required(),
         "input fps")
-    ("experiment_name,e", po::value<std::string>(&experiment_name)->required(),
-         "input folder name");
+    ("name,e", po::value<std::string>(&name)->required(),
+         "input folder name")
+    ("length,f", po::value<int>(&length),
+        "input length") 
+    ("dir,f", po::value<std::string>(&dir),
+        "input dir") 
+        ;
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
     if (vm.count("help"))
@@ -34,19 +41,21 @@ int main(int argc, char *argv[]) try {
     cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  fps);
     cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, fps);
 
-    std::string video_file = "data/" + experiment_name + ".db3";
 
-    if (!(std::filesystem::exists("data")))
+    std::string path = "data/" + dir + "/";
+    std::string video_file = path + name + ".db3";
+
+    if (!(std::filesystem::exists(path)))
     {
-        std::filesystem::create_directories("data");
-        std::cout << "Created directory: " << "data" << '\n';
+        std::filesystem::create_directories(path);
+        std::cout << "Created directory: " << path << '\n';
     }
 
-    cfg.enable_record_to_file("data/" + experiment_name + ".db3");
+    cfg.enable_record_to_file(video_file);
     pipe.start(cfg); 
 
     int frame_count = 0;
-    int total_frames = fps * 10;  // Record for 10 seconds
+    int total_frames = fps * length;  // Record for X seconds
     for (int i = 0; i < total_frames; i++) { 
         pipe.wait_for_frames();
         frame_count++;
