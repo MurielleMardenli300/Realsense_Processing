@@ -11,12 +11,6 @@
 
 static bool running = true;
 
-// void signal_handler(int signum)
-// {
-//     std::cout << "\nInterrupt received, stopping.\n";
-//     running = false;
-// }
-
 std::string load_camera_config(const std::string& path)
 {
     std::ifstream file(path);
