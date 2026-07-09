@@ -21,4 +21,16 @@ if(EXTRACT)
     realsense2
     Boost::program_options
 )
+
+add_executable(trigger_ttl trigger_ttl.cpp)
+    target_link_libraries(trigger_ttl
+    realsense2
+)
+
+add_executable(live_extract live_frame_extraction.cpp)
+    target_link_libraries(live_extract
+    realsense2
+    Boost::program_options
+)
+
 endif()

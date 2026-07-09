@@ -210,8 +210,6 @@ int process_file(
     {
         rs2::frameset frames;
         if (!pipe.poll_for_frames(&frames)) {
-            // No frame ready yet — but also check if playback is already stopped
-            // (the callback may have fired between the poll and this check)
             if (playback.current_status() == RS2_PLAYBACK_STATUS_STOPPED)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -278,7 +276,7 @@ int main(int argc, char* argv[]) try
     std::cout << "Found " << db3_files.size() << " .db3 file(s) in " << data_dir << "\n";
 
 
-    // ── ROI — shared across all files in this run ─────────────────────────────
+    // ── ROI 
     ROI roi;
     roi.xmin = 525;
     roi.xmax = roi.xmin + 350;
@@ -287,7 +285,6 @@ int main(int argc, char* argv[]) try
     roi.y_world_min = -0.175f;
     roi.y_world_max =  0.275f;
 
-    // ── Process each file ─────────────────────────────────────────────────────
     int total_clouds = 0;
     int files_done   = 0;
 
@@ -295,7 +292,6 @@ int main(int argc, char* argv[]) try
     {
         if (!running) break;
 
-        // Output goes to results/<dir>/<experiment_name>/
         std::string experiment_name = video_path.stem().string();
         std::string results_path =
             (std::filesystem::path("results") / dir / experiment_name).string();

@@ -39,10 +39,10 @@ struct ROI {
 };
 
 
-void save_points(const rs2::points& points, const rs2::video_frame& color, int index, const std::string& experiment_name = "test_murielle")
+void save_points(const rs2::points& points, const rs2::video_frame& color, int index, const std::string& experiment_path)
 {
     std::ostringstream filename;
-    filename << "../results/" << experiment_name << "/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
+    filename << "../" << experiment_path << "/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
 
     std::cout << "Saving " << filename.str() << " with " << points.size() << " points...\n";
 
@@ -89,11 +89,11 @@ void save_points_roi(
     const rs2::video_frame& color,
     int                     index,
     const ROI&              roi,
-    const std::string&     experiment_name = "test_murielle")
+    const std::string&     experiment_path)
 {
     std::ostringstream filename;
 
-    filename << "../results/" << experiment_name << "/pointcloud_"
+    filename << "../" << experiment_path  << "/pointcloud_"
              << std::setw(5) << std::setfill('0') << index << ".ply";
 
     auto vertices   = points.get_vertices();
@@ -186,13 +186,28 @@ int main(int argc, char *argv[]) try
     po::variables_map vm;
     po::options_description desc("Allowed options");
 
-    std::string experiment_name;
+    std::string name;
+    std::string dir = "";
+    std::string trigger_port;
+
+    int fps = 0;
+    int length = 20;
 
     desc.add_options()
-        ("help,h", "show help message")
-        ("experiment_name,f", po::value<std::string>(&experiment_name)->required(),
-         "input folder name");
-        po::store(po::parse_command_line(argc, argv, desc), vm);
+    ("help,h", "show help message")
+    ("fps,f", po::value<int>(&fps)->required(),
+        "input fps")
+    ("name,e", po::value<std::string>(&name)->required(),
+         "input folder name")
+    ("length,f", po::value<int>(&length),
+        "input length") 
+    ("dir,f", po::value<std::string>(&dir),
+        "input dir") 
+    ("trigger-port,t", po::value<std::string>(&trigger_port)->default_value(""),
+                          "serial port for TTL trigger (ex /dev/ttyUSB0). "
+                          "If empty, recording starts immediately.")
+    ;
+    po::store(po::parse_command_line(argc, argv, desc), vm);
 
     if (vm.count("help"))
     {
@@ -200,18 +215,18 @@ int main(int argc, char *argv[]) try
         return 0;
     }
     po::notify(vm);
-    std::cout << "Experiment name: " << experiment_name << '\n';
 
-    if (!(std::filesystem::exists("../results/" + experiment_name)))
+    std::string result_path = "../results/" + dir + "/"  + name;
+
+    if (!(std::filesystem::exists(result_path)))
     {
-        std::filesystem::create_directories("../results/" + experiment_name);
-        std::cout << "Created directory: " << "../results/" + experiment_name << '\n';
+        std::filesystem::create_directories(result_path);
+        std::cout << "Created directory: " << result_path << '\n';
     }
     
 
-    std::string video_file = "capture_breath.db3";
-    int sequence_time = 10; // seconds
-    int fps = 15;
+    std::string video_file = name + ".db3";
+    int sequence_time = 20; // seconds
 
     // Define ROI around torso center
     int torso_width = 520;
@@ -249,10 +264,10 @@ int main(int argc, char *argv[]) try
         advanced_mode = dev.as<rs400::advanced_mode>();
     }
 
-    std::cout << "Loading camera settings from JSON...\n";
-    std::string json_content = load_camera_config("../../camera_settings/threshold_settings.json");
-    advanced_mode.load_json(json_content);
-    std::cout << "Settings loaded.\n";
+    // std::cout << "Loading camera settings from JSON...\n";
+    // std::string json_content = load_camera_config("../camera_settings/threshold_settings.json");
+    // advanced_mode.load_json(json_content);
+    // std::cout << "Settings loaded.\n";
 
     // Declare all filters
     // rs2::decimation_filter  dec_filter;
@@ -287,8 +302,8 @@ int main(int argc, char *argv[]) try
     rs2::pipeline pipe;
     rs2::config cfg;
 
-    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  15);
-    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 15);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  fps);
+    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, fps);
 
     cfg.enable_record_to_file(video_file);
 
@@ -298,15 +313,14 @@ int main(int argc, char *argv[]) try
     rs2::points     points;
     rs2::align      align_to_color(RS2_STREAM_COLOR);
 
-    using clock = std::chrono::steady_clock;
-    auto last_saved = clock::now();
     int cloud_index = 0;
     int total_frames = sequence_time * fps;
 
-    std::cout << "Recording to " << video_file << " and extracting point clouds at 15fps...\n";
+    std::cout << "Recording to " << video_file << " and extracting point clouds at " << fps  << "fps...\n";
 
-        while (running)
+    while (running)
     {
+        std::chrono::time_point<std::chrono::high_resolution_clock> start;
         rs2::frameset frames;
         if (!pipe.poll_for_frames(&frames)) continue;
 
@@ -326,15 +340,24 @@ int main(int argc, char *argv[]) try
         filtered = disparity_to_depth.process(filtered);  // convert back
         filtered = hole_filter.process(filtered);
 
-        auto now = clock::now();
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "-- Time elapsed for post proc filters: " << elapsed.count() << "\n";
+
         if (cloud_index < total_frames)
         {
+            std::chrono::time_point<std::chrono::high_resolution_clock> start;
+
             cloud_index++;
             pc.map_to(color);
             points = pc.calculate(filtered);
 
-            save_points_roi(points, color, cloud_index, roi, experiment_name);
-            last_saved = now;
+            save_points_roi(points, color, cloud_index, roi, result_path);
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+            std::cout << "-- all points saved in: " << elapsed.count() << "\n";
+
         }
     }
 

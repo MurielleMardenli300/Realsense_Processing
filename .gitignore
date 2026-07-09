@@ -7,7 +7,13 @@ CMakeCache.txt
 
 my_extracter
 my_recorder
+trigger_ttl
+live_extract
 
 #data
 *.ply
 *.db3
+
+# settings
+*.json
+frame_extraction/Makefile
