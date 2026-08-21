@@ -23,13 +23,10 @@ std::string load_camera_config(const std::string& path)
 }
 
 struct ROI {
-    int xmin = 200;
-    int xmax = 490;
-    int ymin = 200;
-    int ymax = 500;
-
-    float y_world_min = -1000.0f;
-    float y_world_max =  1000.0f;
+    int xmin = 100;
+    int xmax = 540;
+    int ymin = 100;
+    int ymax = 380;
 };
 
 void save_points_roi(
@@ -107,7 +104,6 @@ void save_points_roi(
 }
 
 
-// ── Per-file extraction ───────────────────────────────────────────────────────
 // Returns the number of point clouds saved, or -1 on error.
 int process_file(
     const std::filesystem::path& video_path,
@@ -129,8 +125,8 @@ int process_file(
     rs2::disparity_transform disparity_to_depth(false);
     rs2::hole_filling_filter hole_filter;
 
-    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
-    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
+    // thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
+    // thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
     spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,    2);
     spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.5f);
     spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20);
@@ -143,8 +139,8 @@ int process_file(
     rs2::pipeline pipe(ctx);
     rs2::config   cfg;
     cfg.enable_device_from_file(video_path.string(), false);
-    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  6);
-    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 6);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16,  15);
+    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 15);
 
     auto profile  = pipe.start(cfg);
     auto playback = profile.get_device().as<rs2::playback>();
@@ -204,7 +200,7 @@ int process_file(
         }
     }
 
-    // ── Main extraction loop ──────────────────────────────────────────────────
+    // Extraction
     int cloud_index = 0;
     while (running && !file_done)
     {
@@ -222,7 +218,7 @@ int process_file(
         if (!color || !depth) continue;
 
         rs2::frame filtered = depth;
-        filtered = thr_filter.process(filtered);
+        // filtered = thr_filter.process(filtered);
         filtered = depth_to_disparity.process(filtered);
         filtered = spat_filter.process(filtered);
         filtered = temp_filter.process(filtered);
@@ -276,14 +272,15 @@ int main(int argc, char* argv[]) try
     std::cout << "Found " << db3_files.size() << " .db3 file(s) in " << data_dir << "\n";
 
 
-    // ── ROI 
+    // ROI 
+    // Personal measurements: x = 300mm, y = 270mm, 
+    // Camera res: x = 1280mm , y = 720mm
+    // Frame measurements: x = 1875mm, y = 1077mm
     ROI roi;
-    roi.xmin = 525;
-    roi.xmax = roi.xmin + 350;
-    roi.ymin = 50;
-    roi.ymax = 400;
-    roi.y_world_min = -0.175f;
-    roi.y_world_max =  0.275f;
+    roi.xmin = 540;
+    roi.xmax = roi.xmin + 310;
+    roi.ymin = 80;
+    roi.ymax = 310;
 
     int total_clouds = 0;
     int files_done   = 0;
