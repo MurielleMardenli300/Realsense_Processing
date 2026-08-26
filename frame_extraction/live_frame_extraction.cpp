@@ -1,148 +1,83 @@
 #include <librealsense2/rs.hpp>
-#include <librealsense2/rs_advanced_mode.hpp> 
+#include <librealsense2/rs_advanced_mode.hpp>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
-#include <csignal> 
+#include <csignal>
 #include <thread>
-#include <format>
+#include <mutex>
+#include <queue>
+#include <atomic>
 #include <filesystem>
 #include <boost/program_options.hpp>
-
+#include <opencv2/opencv.hpp>
 
 static bool running = true;
+void signal_handler(int signum) { running = false; }
 
-void signal_handler(int signum)
-{
-    std::cout << "\nInterrupt received, stopping.\n";
-    running = false;
-}
 
-std::string load_camera_config(const std::string& path)
-{
-    std::ifstream file(path);
-    if (!file.is_open())
-        throw std::runtime_error("Could not open JSON file: " + path);
-    return std::string(
-        std::istreambuf_iterator<char>(file),
-        std::istreambuf_iterator<char>()
-    );
-}
-
-struct ROI {
-    int xmin = 150;
-    int xmax = 490;
-    int ymin = 100;
-    int ymax = 380;
+// Async PLY save queue
+struct SaveJob {
+    rs2::points points;
+    rs2::video_frame color;
+    int  index;
+    std::string result_path;
+    rs2::frame filtered;
+    int total_frames;
+    int cloud_index;
 };
 
 
-void save_points(const rs2::points& points, const rs2::video_frame& color, int index, const std::string& experiment_path)
-{
-    std::ostringstream filename;
-    filename << "../" << experiment_path << "/pointcloud_" << std::setw(5) << std::setfill('0') << index << ".ply";
+std::queue<SaveJob>  save_queue;
+std::mutex           queue_mutex;
 
-    std::cout << "Saving " << filename.str() << " with " << points.size() << " points...\n";
+// thread safe boolean: If 2 threads use variable at same time, it forces each step to execute its interrupted transacrtion
+std::atomic<bool>    save_thread_running{true};
 
-    auto vertices  = points.get_vertices();
-    auto tex_coords = points.get_texture_coordinates();
-
-    int w = color.get_width();
-    int h = color.get_height();
-    auto color_data = reinterpret_cast<const uint8_t*>(color.get_data());
-
-    size_t valid = 0;
-    for (size_t i = 0; i < points.size(); i++)
-        if (vertices[i].z > 0) valid++;
-
-    std::ofstream ofs(filename.str());
-    ofs << "ply\nformat ascii 1.0\n"
-        << "element vertex " << valid << "\n"
-        << "property float x\nproperty float y\nproperty float z\n"
-        << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-        << "end_header\n";
-
-    for (size_t i = 0; i < points.size(); i++)
-    {
-        if (vertices[i].z <= 0) continue;
-
-        // Map texture coordinate to color pixel
-        int cx = std::min(std::max(int(tex_coords[i].u * w), 0), w - 1);
-        int cy = std::min(std::max(int(tex_coords[i].v * h), 0), h - 1);
-        int pixel = (cy * w + cx) * 3;
-
-        ofs << vertices[i].x << " "
-            << vertices[i].y << " "
-            << vertices[i].z << " "
-            << int(color_data[pixel + 2]) << " "  // R
-            << int(color_data[pixel + 1]) << " "  // G
-            << int(color_data[pixel + 0]) << "\n"; // B
-    }
-
-    std::cout << "Saved " << filename.str() << " (" << valid << " points)\n";
-}
 
 void save_points_roi(
     const rs2::points&      points,
     const rs2::video_frame& color,
     int                     index,
-    const ROI&              roi,
-    const std::string&     experiment_path)
+    const std::string&      result_path)
 {
     std::ostringstream filename;
-
-    filename << "../" << experiment_path  << "/pointcloud_"
+    filename << result_path << "/pointcloud_"
              << std::setw(5) << std::setfill('0') << index << ".ply";
 
     auto vertices   = points.get_vertices();
     auto tex_coords = points.get_texture_coordinates();
-
-    int w          = color.get_width();
-    int h          = color.get_height();
+    int w = color.get_width();
+    int h = color.get_height();
     auto color_data = reinterpret_cast<const uint8_t*>(color.get_data());
 
-    // ── Reshape flat vertices into 2D grid (H x W) ──
-    // Same concept as issue #2769:
-    // verts = np.reshape(h, w, 3)
-    // roi   = verts[ymin:ymax, xmin:xmax]
     struct Vertex3D { float x, y, z; };
     std::vector<std::vector<Vertex3D>> verts_2d(h, std::vector<Vertex3D>(w));
     std::vector<std::vector<std::pair<float,float>>> tex_2d(
         h, std::vector<std::pair<float,float>>(w));
 
     for (int row = 0; row < h; row++)
-        for (int col = 0; col < w; col++)
-        {
+        for (int col = 0; col < w; col++) {
             int i = row * w + col;
-            verts_2d[row][col] = { vertices[i].x,
-                                   vertices[i].y,
-                                   vertices[i].z };
-            tex_2d[row][col]   = { tex_coords[i].u,
-                                   tex_coords[i].v };
+            verts_2d[row][col] = { vertices[i].x, vertices[i].y, vertices[i].z };
+            tex_2d[row][col]   = { tex_coords[i].u, tex_coords[i].v };
         }
 
-    // ── Clamp ROI to frame bounds ──
-    int x0 = std::max(roi.xmin, 0);
-    int x1 = std::min(roi.xmax, w - 1);
-    int y0 = std::max(roi.ymin, 0);
-    int y1 = std::min(roi.ymax, h - 1);
+    // ROI — hardcoded here, or pass as parameter if needed
+    int x0 = 400, x1 = 920, y0 = 25, y1 = 525;
 
-    // ── Count valid points inside ROI ──
     size_t valid = 0;
     for (int row = y0; row < y1; row++)
         for (int col = x0; col < x1; col++)
-            if (verts_2d[row][col].z > 0)
-                valid++;
+            if (verts_2d[row][col].z > 0) valid++;
 
-    if (valid == 0)
-    {
+    if (valid == 0) {
         std::cout << "Frame " << index << ": empty ROI, skipping\n";
         return;
     }
 
-    // ── Write PLY ──
     std::ofstream ofs(filename.str());
     ofs << "ply\nformat ascii 1.0\n"
         << "element vertex " << valid << "\n"
@@ -151,94 +86,116 @@ void save_points_roi(
         << "end_header\n";
 
     for (int row = y0; row < y1; row++)
-    {
-        for (int col = x0; col < x1; col++)
-        {
+        for (int col = x0; col < x1; col++) {
             const auto& v = verts_2d[row][col];
             if (v.z <= 0) continue;
-
-            // Map texture coordinate to color pixel
             const auto& tc = tex_2d[row][col];
             int cx = std::min(std::max(int(tc.first  * w), 0), w - 1);
             int cy = std::min(std::max(int(tc.second * h), 0), h - 1);
             int px = (cy * w + cx) * 3;
-
             ofs << v.x << " " << v.y << " " << v.z << " "
-                << int(color_data[px + 2]) << " "   // R
-                << int(color_data[px + 1]) << " "   // G
-                << int(color_data[px + 0]) << "\n"; // B
+                << int(color_data[px + 2]) << " "
+                << int(color_data[px + 1]) << " "
+                << int(color_data[px + 0]) << "\n";
         }
-    }
 
-    std::cout << "Saved " << filename.str()
-              << " (" << valid << " pts in ROI ["
-              << x0 << "," << y0 << "]-["
-              << x1 << "," << y1 << "])\n";
+    std::cout << "Saved " << filename.str() << " (" << valid << " pts)\n";
 }
 
 
-int main(int argc, char *argv[]) try
+void preview_live(int cloud_index, int total_frames, rs2::frame filtered, rs2::video_frame color)
+{
+    // Color preview
+    cv::Mat color_mat(
+        color.get_height(), color.get_width(),
+        CV_8UC3,
+        (void*)color.get_data()
+    );
+    // Draw ROI rectangle on preview
+    cv::rectangle(color_mat,
+        cv::Point(400, 25), cv::Point(920, 525),
+        cv::Scalar(0, 255, 0), 2);
+    // Draw frame counter
+    cv::putText(color_mat,
+        "Frame " + std::to_string(cloud_index) + "/" + std::to_string(total_frames),
+        cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8,
+        cv::Scalar(0, 255, 0), 2);
+    cv::putText(color_mat,
+        "Queue: " + std::to_string(save_queue.size()),
+        cv::Point(10, 65), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+        cv::Scalar(0, 200, 255), 2);
+
+    rs2::colorizer colorize;
+    rs2::video_frame depth_colored = colorize.colorize(filtered);
+    cv::Mat depth_mat(
+        depth_colored.get_height(), depth_colored.get_width(),
+        CV_8UC3,
+        (void*)depth_colored.get_data()
+    );
+    cv::rectangle(depth_mat,
+        cv::Point(400, 25), cv::Point(920, 525),
+        cv::Scalar(0, 255, 0), 2);
+
+    // ── Show side by side ─────────────────────────────────────────────
+    cv::Mat preview;
+    cv::hconcat(color_mat, depth_mat, preview);
+    cv::resize(preview, preview, cv::Size(), 0.6, 0.6);  // shrink to fit screen
+    cv::imshow("RealSense Preview (press Q to stop)", preview);
+
+    int key = cv::waitKey(1);
+    if (key == 'q' || key == 'Q') running = false;
+}
+
+
+void save_worker()
+{
+    while (save_thread_running || !save_queue.empty())
+    {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            if (save_queue.empty()) {
+                lock.unlock();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+
+            // Save next job (captured frame) with no concurrency
+            SaveJob job = std::move(save_queue.front());
+            save_queue.pop();
+            save_points_roi(job.points, job.color, job.index, job.result_path);
+            preview_live(job.cloud_index, job.total_frames, job.filtered, job.color);
+        }
+    }
+}
+
+
+int main(int argc, char* argv[]) try
 {
     std::signal(SIGINT, signal_handler);
     namespace po = boost::program_options;
 
-    // Argument parser for file name input
-    po::variables_map vm;
+    std::string name, dir = "", trigger_port = "";
+    int fps = 0, length = 20;
+
     po::options_description desc("Allowed options");
-
-    std::string name;
-    std::string dir = "";
-    std::string trigger_port;
-
-    int fps = 0;
-    int length = 20;
-
     desc.add_options()
-    ("help,h", "show help message")
-    ("fps,f", po::value<int>(&fps)->required(),
-        "input fps")
-    ("name,e", po::value<std::string>(&name)->required(),
-         "input folder name")
-    ("length,f", po::value<int>(&length),
-        "input length") 
-    ("dir,f", po::value<std::string>(&dir),
-        "input dir") 
-    ("trigger-port,t", po::value<std::string>(&trigger_port)->default_value(""),
-                          "serial port for TTL trigger (ex /dev/ttyUSB0). "
-                          "If empty, recording starts immediately.")
-    ;
+        ("help,h",         "show help message")
+        ("fps,f",          po::value<int>(&fps)->required(),         "capture fps")
+        ("name,e",         po::value<std::string>(&name)->required(), "experiment name")
+        ("length,l",       po::value<int>(&length),                  "recording length (s)")
+        ("dir,d",          po::value<std::string>(&dir),             "sub-directory")
+        ("trigger-port,t", po::value<std::string>(&trigger_port),    "TTL serial port");
+ 
+    po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
-
-    if (vm.count("help"))
-    {
-        std::cout << desc << '\n';
-        return 0;
-    }
+    if (vm.count("help")) { std::cout << desc << '\n'; return 0; }
     po::notify(vm);
 
-    std::string result_path = "../results/" + dir + "/"  + name;
+    std::string result_path = "results/" + (dir.empty() ? "" : dir + "/") + name;
+    std::filesystem::create_directories(result_path);
+    std::cout << "Output: " << result_path << '\n';
 
-    if (!(std::filesystem::exists(result_path)))
-    {
-        std::filesystem::create_directories(result_path);
-        std::cout << "Created directory: " << result_path << '\n';
-    }
-    
-
-    std::string video_file = name + ".db3";
-    int sequence_time = 20; // seconds
-
-    // Define ROI around torso center
-    int torso_width = 520;
-
-    // For torso from ymin=-0.175m to 0.275m
-    // int torso_height = 720*0.65;
-    ROI roi;
-    roi.xmin = 400;
-    roi.xmax = roi.xmin + torso_width;
-    roi.ymin = 25;
-    roi.ymax = 525;
-
+    // 1. Camera settings
 
     rs2::context ctx;
     rs2::device_list devices = ctx.query_devices();
@@ -269,110 +226,132 @@ int main(int argc, char *argv[]) try
     // advanced_mode.load_json(json_content);
     // std::cout << "Settings loaded.\n";
 
-    // Declare all filters
-    // rs2::decimation_filter  dec_filter;
-    rs2::threshold_filter   thr_filter;
-    rs2::disparity_transform depth_to_disparity(true);   // depth -> disparity
-    rs2::spatial_filter     spat_filter;
-    rs2::temporal_filter    temp_filter;
-    rs2::disparity_transform disparity_to_depth(false);  // disparity -> depth
-    rs2::hole_filling_filter hole_filter;
 
-    // Tune filter options
-
-    // dec_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
-
-    // Threshold: depth clip in metres
-    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
-    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
-
-    // Spatial: edge-preserving smoothing
-    spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,   2);  
-    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.5f);
-    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20); 
-    spat_filter.set_option(RS2_OPTION_HOLES_FILL,          0); 
-
-    // Temporal: reduces temporal noise across frames
-    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.4f); 
-    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20); 
-    // Persistency mode (0=disabled, 1–8 increasing aggressiveness)
-    temp_filter.set_option(RS2_OPTION_HOLES_FILL,          0);
-
-
+    // 2. Recording setup with parallel thread for PLY points capturing
     rs2::pipeline pipe;
-    rs2::config cfg;
-
+    rs2::config   cfg;
     cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  fps);
     cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, fps);
+    cfg.enable_record_to_file(name + ".db3");   // db3 recorded in parallel
 
-    cfg.enable_record_to_file(video_file);
+    // Filters
+    rs2::threshold_filter    thr_filter;
+    rs2::disparity_transform depth_to_disparity(true);
+    rs2::spatial_filter      spat_filter;
+    rs2::temporal_filter     temp_filter;
+    rs2::disparity_transform disparity_to_depth(false);
+    rs2::hole_filling_filter hole_filter;
 
-    pipe.start(cfg);  
+    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE,        0.1f);
+    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE,        1.0f);
+    spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,   2);
+    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA,0.5f);
+    spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA,20);
+    spat_filter.set_option(RS2_OPTION_HOLES_FILL,         0);
+    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA,0.4f);
+    temp_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA,20);
+    temp_filter.set_option(RS2_OPTION_HOLES_FILL,         0);
+
+    pipe.start(cfg);
+    auto t_start = std::chrono::steady_clock::now();
+
 
     rs2::pointcloud pc;
-    rs2::points     points;
     rs2::align      align_to_color(RS2_STREAM_COLOR);
 
-    int cloud_index = 0;
-    int total_frames = sequence_time * fps;
+    // Start async PLY save thread
+    std::thread saver(save_worker);
 
-    std::cout << "Recording to " << video_file << " and extracting point clouds at " << fps  << "fps...\n";
+    // Camera delivers frames at hardware rate. We only save every (1/fps) seconds (ex: 1/6 = every 100 ms)
+    const auto frame_interval = std::chrono::microseconds(1'000'000 / fps);
+    auto next_save_time       = std::chrono::steady_clock::now();
 
-    while (running)
+    int cloud_index  = 0;
+    int total_frames = length * fps;
+
+    std::cout << "Recording " << length << "s at " << fps
+              << " fps → " << total_frames << " frames\n";
+
+    // auto total_filter_time = std::chrono::steady_clock::now() - std::chrono::steady_clock::now();
+    auto total_filter_time = 0;
+
+    while (running && cloud_index < total_frames)
     {
-        std::chrono::time_point<std::chrono::high_resolution_clock> start;
+        auto t_capture = std::chrono::steady_clock::now();
+
         rs2::frameset frames;
+
+        // If no frames
         if (!pipe.poll_for_frames(&frames)) continue;
 
         auto aligned = align_to_color.process(frames);
         auto color   = aligned.get_color_frame();
         auto depth   = aligned.get_depth_frame();
-
         if (!color || !depth) continue;
 
-        // Apply post processingfilter chain
         rs2::frame filtered = depth;
-        // filtered = dec_filter.process(filtered);
         filtered = thr_filter.process(filtered);
-        filtered = depth_to_disparity.process(filtered); // convert back
+        filtered = depth_to_disparity.process(filtered);
         filtered = spat_filter.process(filtered);
         filtered = temp_filter.process(filtered);
-        filtered = disparity_to_depth.process(filtered);  // convert back
+        filtered = disparity_to_depth.process(filtered);
         filtered = hole_filter.process(filtered);
 
-        auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        std::cout << "-- Time elapsed for post proc filters: " << elapsed.count() << "\n";
+        auto t_filtered = std::chrono::steady_clock::now();
+        auto filter_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              t_filtered - t_capture).count();
 
-        if (cloud_index < total_frames)
+        // PLY save
+        // Only enqueue a save job when we've passed the next scheduled save time.
+        // This ensures PLY output matches the requested fps exactly.
+        auto now = std::chrono::steady_clock::now();
+        if (now >= next_save_time)
         {
-            std::chrono::time_point<std::chrono::high_resolution_clock> start;
-
             cloud_index++;
+            next_save_time += frame_interval; 
+
             pc.map_to(color);
-            points = pc.calculate(filtered);
+            rs2::points pts = pc.calculate(filtered);  
 
-            save_points_roi(points, color, cloud_index, roi, result_path);
+            // Push to async queue with captured thread return
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                save_queue.push({ pts, color, cloud_index, result_path, filtered, total_frames });
+            }
 
-            auto end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            std::cout << "-- all points saved in: " << elapsed.count() << "\n";
+            auto t_enqueued = std::chrono::steady_clock::now();
+            auto enqueue_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  t_enqueued - t_filtered).count();
+            total_filter_time += enqueue_ms;
 
+            std::cout << "Frame " << cloud_index << "/" << total_frames
+                      << "  Frame filtering time = " << filter_ms << "ms"
+                      << "  Frame to point clouds time = " << enqueue_ms << "ms"
+                      << "  queue_depth = " << save_queue.size() << "\n";
         }
     }
 
+    auto t_end = std::chrono::steady_clock::now();
+    std::cout << "\n Total capture time: " << std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count() << "ms";
+    std::cout << "\n Total filtering time: " << total_filter_time << "ms \n";
+
     pipe.stop();
-    std::cout << "Done. Saved " << cloud_index << " point clouds.\n";
+    std::cout << "Capture done. Waiting for frame queue to finish ("
+              << save_queue.size() << " frames remaining)...\n";
+
+    save_thread_running = false;
+    saver.join();
+
+    std::cout << "Done. Saved " << cloud_index << " point clouds to "
+              << result_path << "/\n";
     return EXIT_SUCCESS;
 }
-catch (const rs2::error& e)
-{
+catch (const rs2::error& e) {
     std::cerr << "RealSense error: " << e.get_failed_function()
-              << "(" << e.get_failed_args() << ")\n" << e.what() << "\n";
+              << " " << e.what() << "\n";
     return EXIT_FAILURE;
 }
-catch (const std::exception& e)
-{
+catch (const std::exception& e) {
     std::cerr << e.what() << "\n";
     return EXIT_FAILURE;
 }

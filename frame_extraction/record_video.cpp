@@ -155,6 +155,8 @@ int main(int argc, char *argv[]) try {
     }
     po::notify(vm);
 
+    fps = 10;
+
 
     // Camera setup
 
@@ -192,8 +194,8 @@ int main(int argc, char *argv[]) try {
     rs2::pipeline pipe;
     rs2::config cfg;
 
-    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  fps);
-    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, fps);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 480, 270, RS2_FORMAT_Z16,  fps);
+    cfg.enable_stream(RS2_STREAM_COLOR, 480, 270, RS2_FORMAT_BGR8, fps);
 
 
     std::string path = "data/" + dir + "/";

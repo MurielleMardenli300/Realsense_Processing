@@ -125,8 +125,8 @@ int process_file(
     rs2::disparity_transform disparity_to_depth(false);
     rs2::hole_filling_filter hole_filter;
 
-    // thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.1f);
-    // thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.0f);
+    thr_filter.set_option(RS2_OPTION_MIN_DISTANCE, 0.8f);
+    thr_filter.set_option(RS2_OPTION_MAX_DISTANCE, 1.7f);
     spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE,    2);
     spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.5f);
     spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20);
@@ -140,7 +140,7 @@ int process_file(
     rs2::config   cfg;
     cfg.enable_device_from_file(video_path.string(), false);
     cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16,  15);
-    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 15);
+    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_RGB8, 15);
 
     auto profile  = pipe.start(cfg);
     auto playback = profile.get_device().as<rs2::playback>();
@@ -218,12 +218,12 @@ int process_file(
         if (!color || !depth) continue;
 
         rs2::frame filtered = depth;
-        // filtered = thr_filter.process(filtered);
-        filtered = depth_to_disparity.process(filtered);
+        filtered = thr_filter.process(filtered);
+        // filtered = depth_to_disparity.process(filtered);
         filtered = spat_filter.process(filtered);
         filtered = temp_filter.process(filtered);
-        filtered = disparity_to_depth.process(filtered);
-        filtered = hole_filter.process(filtered);
+        // filtered = disparity_to_depth.process(filtered);
+        // filtered = hole_filter.process(filtered);
 
         cloud_index++;
         pc.map_to(color);
@@ -277,10 +277,15 @@ int main(int argc, char* argv[]) try
     // Camera res: x = 1280mm , y = 720mm
     // Frame measurements: x = 1875mm, y = 1077mm
     ROI roi;
-    roi.xmin = 540;
-    roi.xmax = roi.xmin + 310;
-    roi.ymin = 80;
-    roi.ymax = 310;
+    // roi.xmin = 240;
+    // roi.xmax = roi.xmin + 280;
+    // roi.ymin = 150;
+    // roi.ymax = 250;
+
+    roi.xmin = 240;
+    roi.xmax = roi.xmin + 340;
+    roi.ymin = 10;
+    roi.ymax = 400;
 
     int total_clouds = 0;
     int files_done   = 0;
