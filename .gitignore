@@ -5,6 +5,9 @@
 *.cmake
 CMakeCache.txt
 
+# logs
+log.txt
+
 my_extracter
 my_recorder
 trigger_ttl
@@ -13,6 +16,9 @@ live_extract
 #data
 *.ply
 *.db3
+*.npy
+*.xml
+*.ini
 
 # settings
 *.json

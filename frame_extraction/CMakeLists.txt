@@ -3,6 +3,7 @@ project(my_realsense)
 
 find_package(realsense2 REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(OpenCV REQUIRED)
 
 option(RECORD OFF)
 option(EXTRACT OFF)
@@ -31,6 +32,14 @@ add_executable(live_extract live_frame_extraction.cpp)
     target_link_libraries(live_extract
     realsense2
     Boost::program_options
+    ${OpenCV_LIBS}
+)
+
+add_executable(extract_roi extract_roi.cpp)
+    target_link_libraries(extract_roi
+    realsense2
+    Boost::program_options
+    ${OpenCV_LIBS}
 )
 
 endif()

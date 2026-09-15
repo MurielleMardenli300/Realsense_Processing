@@ -129,8 +129,8 @@ int main(int argc, char *argv[]) try {
     std::string dir = "";
     std::string trigger_port;
 
-    int fps = 0;
-    int length = 20;
+    int fps = 15;
+    int length = 300;
 
     desc.add_options()
     ("help,h", "show help message")
@@ -155,12 +155,10 @@ int main(int argc, char *argv[]) try {
     }
     po::notify(vm);
 
-    fps = 10;
-
 
     // Camera setup
 
-    //     rs2::context ctx;
+    // rs2::context ctx;
     // rs2::device_list devices = ctx.query_devices();
     // if (devices.size() == 0)
     //     throw std::runtime_error("No RealSense device detected.");
@@ -194,8 +192,8 @@ int main(int argc, char *argv[]) try {
     rs2::pipeline pipe;
     rs2::config cfg;
 
-    cfg.enable_stream(RS2_STREAM_DEPTH, 480, 270, RS2_FORMAT_Z16,  fps);
-    cfg.enable_stream(RS2_STREAM_COLOR, 480, 270, RS2_FORMAT_BGR8, fps);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16,  fps);
+    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_RGB8, fps);
 
 
     std::string path = "data/" + dir + "/";

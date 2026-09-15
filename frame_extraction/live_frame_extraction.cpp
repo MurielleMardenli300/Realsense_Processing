@@ -230,8 +230,8 @@ int main(int argc, char* argv[]) try
     // 2. Recording setup with parallel thread for PLY points capturing
     rs2::pipeline pipe;
     rs2::config   cfg;
-    cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16,  fps);
-    cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, fps);
+    cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16,  fps);
+    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_RGB8, fps);
     cfg.enable_record_to_file(name + ".db3");   // db3 recorded in parallel
 
     // Filters
