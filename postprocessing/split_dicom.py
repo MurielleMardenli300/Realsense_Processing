@@ -6,22 +6,24 @@ it) separates the navigator frames from the volume-slice frames within a
 series, use this to copy just the frames you want into a clean folder --
 e.g. so MRI_DIR in the viewer notebook points at volume slices only.
 
+For a SINGLE fixed slice location tracked over time (the correct input for
+frame-to-frame / vs-reference motion quantification on one slice), run this
+TWICE in sequence: once to filter by trigger_time (navigator vs. volume),
+then again on that output to filter by slice_location (one slice out of many).
+
 Usage
 -----
-# split by TriggerTime (your case: navigator vs. volume slice differ here)
+# step 1: keep only volume-trigger frames (all slices, all phases)
 python split_dicom_by_attribute.py \\
-    --input /path/to/mixed_series_folder \\
-    --output /path/to/volume_slices_only \\
-    --attribute trigger_time \\
-    --keep_value 365
+    --input /path/to/raw_series_folder \\
+    --output /path/to/volume_only \\
+    --attribute trigger_time --keep_value 365
 
-# multiple values to keep are comma-separated (in case more than one
-# TriggerTime belongs to the volume slice, not just the navigator)
+# step 2: narrow that down to ONE slice location, tracked over time
 python split_dicom_by_attribute.py \\
-    --input /path/to/mixed_series_folder \\
-    --output /path/to/volume_slices_only \\
-    --attribute trigger_time \\
-    --keep_value 365,367.5
+    --input /path/to/volume_only \\
+    --output /path/to/single_slice_volume_only \\
+    --attribute slice_location --keep_value -10.733482360839
 
 # split by ImageType or Rows x Columns instead
 python split_dicom_by_attribute.py \\
@@ -37,7 +39,7 @@ from pathlib import Path
 
 import pydicom
 
-NUMERIC_ATTRIBUTES = {"trigger_time"}
+NUMERIC_ATTRIBUTES = {"trigger_time", "slice_location"}
 
 
 def looks_like_dicom(path: Path) -> bool:
@@ -64,6 +66,8 @@ def get_attribute_value(ds, attribute: str) -> str:
         return str(getattr(ds, "SequenceName", ""))
     if attribute == "trigger_time":
         return str(getattr(ds, "TriggerTime", ""))
+    if attribute == "slice_location":
+        return str(getattr(ds, "SliceLocation", ""))
     raise ValueError(f"Unknown --attribute {attribute!r}")
 
 
@@ -82,7 +86,7 @@ def main():
     parser.add_argument("--input", required=True, help="Folder of mixed DICOM files")
     parser.add_argument("--output", required=True, help="Folder to copy matching files into")
     parser.add_argument("--attribute", required=True,
-                         choices=["image_type", "shape", "sequence_name", "trigger_time"],
+                         choices=["image_type", "shape", "sequence_name", "trigger_time", "slice_location"],
                          help="Which tag to filter on -- see explore_mri_series.py's "
                               "output for what varies in your data")
     parser.add_argument("--keep_value", required=True,
