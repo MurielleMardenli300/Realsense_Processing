@@ -12,6 +12,7 @@ my_extracter
 my_recorder
 trigger_ttl
 live_extract
+extract_roi
 
 #data
 *.ply
@@ -19,6 +20,7 @@ live_extract
 *.npy
 *.xml
 *.ini
+*.csv
 
 # settings
 *.json

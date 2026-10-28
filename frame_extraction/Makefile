@@ -142,6 +142,93 @@ my_extracter/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/my_extracter.dir/build.make CMakeFiles/my_extracter.dir/build
 .PHONY : my_extracter/fast
 
+#=============================================================================
+# Target rules for targets named trigger_ttl
+
+# Build rule for target.
+trigger_ttl: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 trigger_ttl
+.PHONY : trigger_ttl
+
+# fast build rule for target.
+trigger_ttl/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trigger_ttl.dir/build.make CMakeFiles/trigger_ttl.dir/build
+.PHONY : trigger_ttl/fast
+
+#=============================================================================
+# Target rules for targets named live_extract
+
+# Build rule for target.
+live_extract: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 live_extract
+.PHONY : live_extract
+
+# fast build rule for target.
+live_extract/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/live_extract.dir/build.make CMakeFiles/live_extract.dir/build
+.PHONY : live_extract/fast
+
+#=============================================================================
+# Target rules for targets named extract_roi
+
+# Build rule for target.
+extract_roi: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 extract_roi
+.PHONY : extract_roi
+
+# fast build rule for target.
+extract_roi/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/extract_roi.dir/build.make CMakeFiles/extract_roi.dir/build
+.PHONY : extract_roi/fast
+
+extract_roi.o: extract_roi.cpp.o
+.PHONY : extract_roi.o
+
+# target to build an object file
+extract_roi.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/extract_roi.dir/build.make CMakeFiles/extract_roi.dir/extract_roi.cpp.o
+.PHONY : extract_roi.cpp.o
+
+extract_roi.i: extract_roi.cpp.i
+.PHONY : extract_roi.i
+
+# target to preprocess a source file
+extract_roi.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/extract_roi.dir/build.make CMakeFiles/extract_roi.dir/extract_roi.cpp.i
+.PHONY : extract_roi.cpp.i
+
+extract_roi.s: extract_roi.cpp.s
+.PHONY : extract_roi.s
+
+# target to generate assembly for a file
+extract_roi.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/extract_roi.dir/build.make CMakeFiles/extract_roi.dir/extract_roi.cpp.s
+.PHONY : extract_roi.cpp.s
+
+live_frame_extraction.o: live_frame_extraction.cpp.o
+.PHONY : live_frame_extraction.o
+
+# target to build an object file
+live_frame_extraction.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/live_extract.dir/build.make CMakeFiles/live_extract.dir/live_frame_extraction.cpp.o
+.PHONY : live_frame_extraction.cpp.o
+
+live_frame_extraction.i: live_frame_extraction.cpp.i
+.PHONY : live_frame_extraction.i
+
+# target to preprocess a source file
+live_frame_extraction.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/live_extract.dir/build.make CMakeFiles/live_extract.dir/live_frame_extraction.cpp.i
+.PHONY : live_frame_extraction.cpp.i
+
+live_frame_extraction.s: live_frame_extraction.cpp.s
+.PHONY : live_frame_extraction.s
+
+# target to generate assembly for a file
+live_frame_extraction.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/live_extract.dir/build.make CMakeFiles/live_extract.dir/live_frame_extraction.cpp.s
+.PHONY : live_frame_extraction.cpp.s
+
 record_video.o: record_video.cpp.o
 .PHONY : record_video.o
 
@@ -165,6 +252,30 @@ record_video.s: record_video.cpp.s
 record_video.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/my_recorder.dir/build.make CMakeFiles/my_recorder.dir/record_video.cpp.s
 .PHONY : record_video.cpp.s
+
+trigger_ttl.o: trigger_ttl.cpp.o
+.PHONY : trigger_ttl.o
+
+# target to build an object file
+trigger_ttl.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trigger_ttl.dir/build.make CMakeFiles/trigger_ttl.dir/trigger_ttl.cpp.o
+.PHONY : trigger_ttl.cpp.o
+
+trigger_ttl.i: trigger_ttl.cpp.i
+.PHONY : trigger_ttl.i
+
+# target to preprocess a source file
+trigger_ttl.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trigger_ttl.dir/build.make CMakeFiles/trigger_ttl.dir/trigger_ttl.cpp.i
+.PHONY : trigger_ttl.cpp.i
+
+trigger_ttl.s: trigger_ttl.cpp.s
+.PHONY : trigger_ttl.s
+
+# target to generate assembly for a file
+trigger_ttl.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trigger_ttl.dir/build.make CMakeFiles/trigger_ttl.dir/trigger_ttl.cpp.s
+.PHONY : trigger_ttl.cpp.s
 
 video_to_frame.o: video_to_frame.cpp.o
 .PHONY : video_to_frame.o
@@ -198,11 +309,23 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... extract_roi"
+	@echo "... live_extract"
 	@echo "... my_extracter"
 	@echo "... my_recorder"
+	@echo "... trigger_ttl"
+	@echo "... extract_roi.o"
+	@echo "... extract_roi.i"
+	@echo "... extract_roi.s"
+	@echo "... live_frame_extraction.o"
+	@echo "... live_frame_extraction.i"
+	@echo "... live_frame_extraction.s"
 	@echo "... record_video.o"
 	@echo "... record_video.i"
 	@echo "... record_video.s"
+	@echo "... trigger_ttl.o"
+	@echo "... trigger_ttl.i"
+	@echo "... trigger_ttl.s"
 	@echo "... video_to_frame.o"
 	@echo "... video_to_frame.i"
 	@echo "... video_to_frame.s"

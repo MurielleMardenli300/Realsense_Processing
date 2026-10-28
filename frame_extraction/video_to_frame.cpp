@@ -235,7 +235,7 @@ int process_file(
     std::cout << "  Done: " << cloud_index << " point clouds saved.\n";
     return cloud_index;
 }
-
+ 
 
 int main(int argc, char* argv[]) try
 {
